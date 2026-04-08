@@ -1,0 +1,122 @@
+{
+  "tableCategories": {
+    "core_company": {
+      "description": "Core company information tables",
+      "tables": [
+        "data_platform_company",
+        "v_companies",
+        "company_aggregate"
+      ],
+      "priority": 1
+    },
+    "company_assets": {
+      "description": "Drug pipeline and asset information",
+      "tables": [
+        "data_platform_companyasset",
+        "v_company_asset",
+        "data_platform_assetcategory",
+        "data_platform_assetclinicaltrial",
+        "asset_validation",
+        "v_asset_validation_summary"
+      ],
+      "priority": 1
+    },
+    "financial": {
+      "description": "Financial and funding information",
+      "tables": [
+        "data_platform_companypitchbook",
+        "data_platform_pitchbookdeal",
+        "data_platform_pitchbookinvestor"
+      ],
+      "priority": 2
+    },
+    "people": {
+      "description": "Company personnel and team",
+      "tables": [
+        "data_platform_people",
+        "data_platform_peopleteamtype"
+      ],
+      "priority": 3
+    },
+    "partnerships": {
+      "description": "Company partnerships and affiliations",
+      "tables": [
+        "data_platform_partnership",
+        "data_platform_companypartnership",
+        "data_platform_affiliation",
+        "data_platform_companyaffiliation"
+      ],
+      "priority": 3
+    },
+    "ip": {
+      "description": "Intellectual property and patents",
+      "tables": [
+        "data_platform_companypatent"
+      ],
+      "priority": 3
+    },
+    "news": {
+      "description": "News and media coverage",
+      "tables": [
+        "data_platform_news",
+        "data_platform_googlenewsarticles"
+      ],
+      "priority": 4
+    },
+    "categories": {
+      "description": "Classification and taxonomy",
+      "tables": [
+        "data_platform_category",
+        "v_hallmark_of_aging",
+        "v_therapeutic_area",
+        "asset_pos"
+      ],
+      "priority": 2
+    },
+    "system": {
+      "description": "System and admin tables (usually excluded)",
+      "tables": [
+        "auth_group",
+        "auth_permission",
+        "django_admin_log",
+        "django_migrations",
+        "django_session",
+        "django_cache_table",
+        "django_content_type"
+      ],
+      "priority": 99
+    }
+  },
+  "commonQueries": {
+    "company_search": [
+      "v_companies",
+      "data_platform_company",
+      "company_aggregate"
+    ],
+    "pipeline_analysis": [
+      "v_company_asset",
+      "data_platform_companyasset",
+      "data_platform_assetcategory"
+    ],
+    "financial_overview": [
+      "data_platform_companypitchbook",
+      "data_platform_pitchbookdeal"
+    ],
+    "validation_quality": [
+      "asset_validation",
+      "v_asset_validation_summary",
+      "v_validation_dashboard"
+    ]
+  },
+  "fieldDescriptions": {
+    "market_cap_b": "Market capitalization in billions USD",
+    "revenue_m": "Revenue in millions USD",
+    "rd_spend_m": "R&D spending in millions USD",
+    "DevelopmentPhase": "Clinical development phase (Preclinical, Phase 1, Phase 2, Phase 3, Approved, etc.)",
+    "TherapeuticArea": "Therapeutic area/disease category",
+    "HallmarkOfAging": "Biological hallmarks of aging targeted",
+    "MechanismOfAction": "Drug mechanism of action description",
+    "POS": "Probability of Success percentage",
+    "OverallConfidence": "Validation confidence score (0-1)"
+  }
+}
