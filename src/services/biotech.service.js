@@ -25,9 +25,10 @@ export class BiotechService {
       "How many clinical trials are in each phase?",
       "What is the total R&D spending across all companies?",
       "Which therapeutic areas have the most pipeline drugs?",
-      "List all FDA-approved first-in-class drugs",
+      "Which companies are publicly listed vs. privately held?",
       "Show me all active Phase 3 clinical trials",
-      "What's the distribution of molecule types in the pipeline?"
+      "What's the distribution of molecule types in the pipeline?",
+      "What assets target mitochondrial dysfunction in biotech?"
     ];
   }
 }

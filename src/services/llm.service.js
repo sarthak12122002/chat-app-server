@@ -5,48 +5,35 @@ import { SchemaService } from './schema.service.js';
 
 export class LLMService {
   static buildPrompt(question, schema) {
-    return `You are a SQL query generator for a longevity/biotech database.
+    // OPTIMIZED: Minimal, focused prompt
+    return `You are a MySQL query generator for a longevity/biotech database.
 
-    ${schema}
+${schema}
 
-    Question: ${question}
+Question: ${question}
 
-    Generate a MySQL query. Return JSON:
-    {
-      "sql": "SELECT ... LIMIT ...",
-      "visualization_type": "table|bar_chart|pie_chart|line_chart|metric",
-      "explanation": "What this shows",
-      "chart_config": {
-        "x_key": "column_name",
-        "y_key": "column_name",
-        "title": "Chart title"
-      }
-    }
+**IMPORTANT INSTRUCTIONS:**
 
-    CRITICAL RULES:
+1. Check the COLUMN NAME MAPPINGS table carefully - use EXACT column names
+2. Only use GROUP BY when you need aggregation (COUNT, SUM, etc.)
+3. For simple lists, just SELECT columns without GROUP BY
+4. Always include LIMIT (max 50)
+5. The word "grant" in strings/column names is OK - only SQL GRANT command is blocked
 
-    1. GROUP BY Requirements:
-      ❌ WRONG: SELECT name, value FROM t GROUP BY name
-      ✅ RIGHT: SELECT name, SUM(value) FROM t GROUP BY name
-      ✅ RIGHT: SELECT id, name, MAX(value) FROM t GROUP BY id, name
-      
-      When using GROUP BY, ALL non-aggregated columns MUST be either:
-      - In the GROUP BY clause, OR
-      - Wrapped in an aggregate function (COUNT, SUM, AVG, MAX, MIN)
-
-    2. Common Patterns:
-      - Top N: SELECT col FROM table ORDER BY col DESC LIMIT 10
-      - Count: SELECT category, COUNT(*) as count FROM table GROUP BY category
-      - With JOIN: SELECT a.id, a.name, COUNT(b.id) as count FROM a LEFT JOIN b ON a.id=b.a_id GROUP BY a.id, a.name
-      - Multiple aggregates: SELECT name, COUNT(*) as total, SUM(value) as sum FROM t GROUP BY name
-
-    3. Always include LIMIT (max 50)
-
-    4. Use proper JOINs with foreign keys
-
-    5. MySQL syntax only (LIMIT not FETCH, use backticks for reserved words)`;
+**Output JSON format:**
+{
+  "sql": "SELECT ... FROM ... WHERE ... LIMIT ...",
+  "visualization_type": "table|bar_chart|pie_chart|line_chart|metric",
+  "explanation": "What this shows",
+  "chart_config": {
+    "x_key": "column_name",
+    "y_key": "column_name", 
+    "title": "Chart title"
+  }
+}`;
   }
 
+  // Keep all provider methods unchanged
   static async generateQueryWithAnthropic(question, schema, client, model) {
     const prompt = this.buildPrompt(question, schema);
 
@@ -78,6 +65,8 @@ export class LLMService {
 
   static async generateQueryWithGroq(question, schema, client, model) {
     const prompt = this.buildPrompt(question, schema);
+    
+    //logger.info('Question and schema:', { question: question.substring(), schema: schema.substring() });
 
     const response = await client.chat.completions.create({
       model: model,
@@ -101,7 +90,6 @@ export class LLMService {
       const schema = await SchemaService.getSchemaDescription();
       const { client, type, model } = getLLMClient();
 
-      // Log token estimate
       const estimatedTokens = Math.ceil(schema.length / 4);
       logger.info(`Generating query with ${type}/${model}`, {
         schemaSize: schema.length,
@@ -128,7 +116,6 @@ export class LLMService {
     } catch (error) {
       logger.error('LLM generation error:', error);
       
-      // Check if it's a token limit error
       if (error.message?.includes('rate_limit_exceeded') || error.message?.includes('Request too large')) {
         logger.error('Token limit exceeded - schema too large');
         throw new Error('Schema too large for selected model. Please use llama-3.3-70b-versatile or gpt-4-turbo.');
