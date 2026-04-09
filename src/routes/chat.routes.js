@@ -4,7 +4,7 @@ import { validate } from '../middleware/validate.middleware.js';
 import { authMiddleware } from '../middleware/auth.middleware.js';
 import { chatRateLimiter } from '../middleware/rateLimit.middleware.js';
 import { chatQuerySchema } from '../utils/validators.js';
-import { validateSchemaForModel } from '../middleware/schema.middleware.js';
+// import { validateSchemaForModel } from '../middleware/schema.middleware.js';
 
 const router = express.Router();
 
@@ -15,7 +15,6 @@ router.post(
   '/query',
   chatRateLimiter,
   validate(chatQuerySchema),
-  validateSchemaForModel,
   ChatController.processQuery
 );
 
@@ -23,7 +22,6 @@ router.post(
   '/query/stream',
   chatRateLimiter,
   validate(chatQuerySchema),
-  validateSchemaForModel,
   ChatController.processQueryStream
 );
 

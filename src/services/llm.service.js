@@ -88,7 +88,7 @@ export class LLMService {
         { role: 'user', content: prompt }
       ],
       temperature: 0.3,
-      max_tokens: 1500,
+      max_tokens: 2000,
       response_format: { type: 'json_object' }
     });
 

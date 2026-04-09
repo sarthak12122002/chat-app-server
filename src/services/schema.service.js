@@ -46,10 +46,7 @@ const VIEW_PRIORITY = {
 };
 
 // Max tables to include in a single prompt
-const MAX_TABLES_IN_CONTEXT = 4;
-
-// Cache TTL in milliseconds (1 hour — refresh if schema changes)
-const CACHE_TTL_MS = 60 * 60 * 1000;
+const MAX_TABLES_IN_CONTEXT = 3;
 
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -58,7 +55,6 @@ export class SchemaService {
   // ─── In-memory catalog built once from DB ────────────────────────────────────
   // Structure: Map<tableName, { type, columns, foreignKeys, jsonColumns, keywordSet }>
   static _catalog = null;
-  static _catalogBuiltAt = null;
 
   // ─── Entry point: schema string for a specific question ──────────────────────
   static async getSchemaForQuestion(question) {
@@ -89,10 +85,16 @@ export class SchemaService {
 
   // ─── Build the full catalog from DB (runs once, then cached) ─────────────────
   static async _ensureCatalog() {
-    const isStale = !this._catalogBuiltAt ||
-      (Date.now() - this._catalogBuiltAt > CACHE_TTL_MS);
+    // Check in-memory first (fastest)
+  if (this._catalog) return;
 
-    if (this._catalog && !isStale) return;
+  // Check schemaCache (survives across requests, has TTL from config)
+  const cached = schemaCache.get('catalog');
+    if (cached) {
+      this._catalog = cached;
+      logger.debug('Schema catalog restored from cache');
+      return;
+    }
 
     logger.info('Building schema catalog from DB...');
     this._catalog = new Map();
@@ -167,7 +169,7 @@ export class SchemaService {
       });
     }
 
-    this._catalogBuiltAt = Date.now();
+    schemaCache.set('catalog', this._catalog);
     logger.info(`Catalog built: ${this._catalog.size} usable tables/views`);
   }
 
@@ -196,9 +198,12 @@ export class SchemaService {
 
     // Always include v_companies as the anchor table (FK hub)
     const result = scores.slice(0, MAX_TABLES_IN_CONTEXT);
+    // AFTER — only inject if results are weak (no strong match found)
+    const topScore = result[0]?.score ?? 0;
     const hasCompanies = result.some(t => t.name === 'v_companies');
-    if (!hasCompanies && this._catalog.has('v_companies')) {
-      // Replace the lowest scoring table with v_companies
+    const isAssetOnlyQuery = result.some(t => t.name === 'v_company_asset' && t.score > 8);
+
+    if (!hasCompanies && !isAssetOnlyQuery && topScore < 6 && this._catalog.has('v_companies')) {
       if (result.length >= MAX_TABLES_IN_CONTEXT) result.pop();
       result.push({ ...this._catalog.get('v_companies'), score: 0 });
     }
@@ -386,9 +391,8 @@ export class SchemaService {
   }
 
   static clearCache() {
-    this._catalog = null;
-    this._catalogBuiltAt = null;
-    schemaCache.clear();
+    this._catalog = null;       // clear in-memory
+    schemaCache.clear();        // clear cache (handles TTL timestamps too)
     logger.info('Schema catalog cleared — will rebuild on next request');
   }
 
