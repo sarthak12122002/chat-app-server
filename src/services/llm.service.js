@@ -5,33 +5,46 @@ import { SchemaService } from './schema.service.js';
 
 export class LLMService {
   static buildPrompt(question, schema) {
-    // OPTIMIZED: Minimal, focused prompt
-    return `You are a MySQL query generator for a longevity/biotech database.
+  return `You are a biotech/longevity data analyst. Your job is to generate a MySQL query and provide context about what the question is asking — not the actual answer (you don't have the data).
 
-${schema}
+  ${schema}
 
-Question: ${question}
+  Question: ${question}
 
-**IMPORTANT INSTRUCTIONS:**
+  INSTRUCTIONS:
+  1. Use EXACT column names from schema above
+  2. GROUP BY only with aggregates (COUNT, SUM, AVG, MAX, MIN)
+  3. LIMIT max 50 rows
+  4. "grant" in column names is fine — only SQL GRANT command is blocked
+  5. Generate COMPLETE SQL, never truncate
 
-1. Check the COLUMN NAME MAPPINGS table carefully - use EXACT column names
-2. Only use GROUP BY when you need aggregation (COUNT, SUM, etc.)
-3. For simple lists, just SELECT columns without GROUP BY
-4. Always include LIMIT (max 50)
-5. The word "grant" in strings/column names is OK - only SQL GRANT command is blocked
+  EXPLANATION RULES:
+  - Explain what this question is analyzing and why it's relevant in longevity/biotech context
+  - Do NOT include any numbers, rankings, or specific values — you don't have the data yet
+  - Do NOT say "the results show..." or "the data indicates..." 
+  - Write 2 sentences max: what the question explores + why it matters in this domain
+  - Example good explanation: "This looks at which hallmarks of aging have the most drug development activity, helping identify where the field is most focused therapeutically."
+  - Never mention SQL, queries, databases, or technical details
 
-**Output JSON format:**
-{
-  "sql": "SELECT ... FROM ... WHERE ... LIMIT ...",
-  "visualization_type": "table|bar_chart|pie_chart|line_chart|metric",
-  "explanation": "What this shows",
-  "chart_config": {
-    "x_key": "column_name",
-    "y_key": "column_name", 
-    "title": "Chart title"
-  }
-}`;
-  }
+  VISUALIZATION RULES:
+  - Rankings/comparisons (top N) → bar_chart
+  - Proportions that sum to 100% → pie_chart
+  - Trends over time/dates → line_chart
+  - Single number answer → metric
+  - Everything else → table
+
+  Output valid JSON only, no markdown:
+  {
+    "sql": "COMPLETE SQL HERE",
+    "visualization_type": "table|bar_chart|pie_chart|line_chart|metric",
+    "explanation": "2 sentence context about what this question explores and why it matters.",
+    "chart_config": {
+      "x_key": "exact_column_name",
+      "y_key": "exact_column_name",
+      "title": "Concise chart title"
+    }
+  }`;
+}
 
   // Keep all provider methods unchanged
   static async generateQueryWithAnthropic(question, schema, client, model) {
@@ -87,7 +100,7 @@ Question: ${question}
 
   static async generateQuery(question) {
     try {
-      const schema = await SchemaService.getSchemaDescription();
+      const schema = await SchemaService.getSchemaForQuestion(question);
       const { client, type, model } = getLLMClient();
 
       const estimatedTokens = Math.ceil(schema.length / 4);
@@ -204,7 +217,7 @@ Question: ${question}
 
   static async *generateQueryStream(question) {
     try {
-      const schema = await SchemaService.getSchemaDescription();
+      const schema = await SchemaService.getSchemaForQuestion(question);
       const { client, type, model } = getLLMClient();
 
       logger.info('Starting streaming query generation', {
