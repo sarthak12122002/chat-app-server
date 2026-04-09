@@ -8,22 +8,24 @@ import { logger } from '../utils/logger.js';
 export class ChatController {
   static async processQuery(req, res, next) {
     try {
-      const { question } = req.validatedData;
+      // ─────────────────────────────────────────────────────────────────────
+      // CHANGE: Now accepts session_id and history from frontend
+      // WHY: Enable conversation threading and context-aware responses
+      // ─────────────────────────────────────────────────────────────────────
+      const { question, history = [], session_id = null } = req.validatedData;
       const userId = req.user?.id || null;
 
-      // ─────────────────────────────────────────────────────────────────────
-      // CHANGE: AI-powered intent classification (replaces keyword matching)
-      // WHY: Handles greetings, spelling errors, and context better than keywords
-      // ─────────────────────────────────────────────────────────────────────
+      // Step 1: AI-powered domain validation
       const classification = await BiotechService.classifyQuestion(question);
 
-      // Handle greetings/casual conversation
+      // Handle greetings
       if (classification.category === 'greeting') {
         const greetingResponse = BiotechService.getGreetingResponse(question);
         
         const saved = await QueryService.create({
           question,
           user_id: userId,
+          session_id: session_id,
           status: QUERY_STATUS.COMPLETED,
           response_text: greetingResponse
         });
@@ -38,13 +40,14 @@ export class ChatController {
         });
       }
 
-      // Reject spam or completely unrelated queries
+      // Reject spam
       if (classification.category === 'spam' || classification.category === 'general_knowledge') {
         const rejection = BiotechService.getRejectionResponse();
         
         const saved = await QueryService.create({
           question,
           user_id: userId,
+          session_id, // NEW
           status: QUERY_STATUS.REJECTED,
           response_text: rejection.response_text
         });
@@ -56,10 +59,7 @@ export class ChatController {
         });
       }
 
-      // ─────────────────────────────────────────────────────────────────────
-      // CHANGE: Use spell-corrected question if AI detected errors
-      // WHY: Improves SQL generation accuracy (e.g., "senolytics" → "cellular senescence")
-      // ─────────────────────────────────────────────────────────────────────
+      // Use spell-corrected question
       const processedQuestion = classification.corrected_question || question;
       
       if (classification.corrected_question) {
@@ -69,16 +69,21 @@ export class ChatController {
         });
       }
 
-      // Step 2: Generate SQL with LLM (using corrected question)
+      // Step 2: Generate SQL with LLM
       let llmResult;
       try {
-        llmResult = await LLMService.generateQuery(processedQuestion);
+        // ───────────────────────────────────────────────────────────────────
+        // CHANGE: Pass conversation history to LLM for context
+        // WHY: Enables "show me more", "compare to X" type follow-ups
+        // ───────────────────────────────────────────────────────────────────
+        llmResult = await LLMService.generateQuery(processedQuestion, history);
       } catch (error) {
         logger.error('LLM generation failed:', error);
         
         const saved = await QueryService.create({
           question,
           user_id: userId,
+          session_id, // NEW
           status: QUERY_STATUS.ERROR,
           response_text: 'Failed to generate query. Please try rephrasing your question.'
         });
@@ -105,7 +110,6 @@ export class ChatController {
           error: error.message 
         });
         
-        // Try to auto-fix GROUP BY issues
         if (error.message.includes('GROUP BY')) {
           try {
             const fixedSql = SQLService.autoFixGroupBy(llmResult.sql);
@@ -118,31 +122,11 @@ export class ChatController {
             logger.info('Auto-fix successful');
           } catch (fixError) {
             logger.error('Auto-fix failed:', fixError);
-            throw error; // Throw original error
+            throw error;
           }
         } else {
           throw error;
         }
-      }
-
-      // If still failed, return error
-      if (!rows) {
-        const saved = await QueryService.create({
-          question,
-          user_id: userId,
-          generated_sql: llmResult.sql,
-          status: QUERY_STATUS.ERROR,
-          response_text: 'Unable to execute the generated query. Please rephrase your question.'
-        });
-
-        return res.status(500).json({
-          status: QUERY_STATUS.ERROR,
-          query_id: saved.id,
-          generated_sql: llmResult.sql,
-          response_text: 'Unable to execute the generated query. Please rephrase your question.',
-          error_detail: error.message,
-          suggestions: BiotechService.getSuggestedQueries()
-        });
       }
 
       // Step 4: Format results
@@ -151,19 +135,23 @@ export class ChatController {
         llmResult.visualization_type
       );
 
-      // ─────────────────────────────────────────────────────────────────────
-      // CHANGE: Include spell correction note in response if applicable
-      // WHY: Transparency - user knows their input was auto-corrected
-      // ─────────────────────────────────────────────────────────────────────
+      // Format response text
       let responseText = llmResult.explanation;
+      // if (classification.corrected_question) {
+      //   responseText = `*(Interpreted as: "${classification.corrected_question}")*\n\n${responseText}`;
+      // }
       if (autoFixed) {
         responseText += ' *(Query was automatically optimized)*';
       }
 
-      // Step 5: Save to database
+      // ─────────────────────────────────────────────────────────────────────
+      // CHANGE: Save query with session_id linkage
+      // WHY: Group related queries into conversation threads
+      // ─────────────────────────────────────────────────────────────────────
       const saved = await QueryService.create({
         question,
         user_id: userId,
+        session_id, // NEW: Link to session
         generated_sql: finalSql,
         response_text: responseText,
         visualization_type: llmResult.visualization_type,
@@ -173,8 +161,17 @@ export class ChatController {
         is_saved: false
       });
 
+      // ─────────────────────────────────────────────────────────────────────
+      // NEW: Update session timestamp (keeps it at top of list)
+      // WHY: Sessions with recent activity should appear first
+      // ─────────────────────────────────────────────────────────────────────
+      if (session_id) {
+        await ChatSession.touch(session_id);
+      }
+
       logger.info('Query processed successfully', {
         queryId: saved.id,
+        session_id,
         question,
         corrected: classification.corrected_question,
         rowCount: rows.length,
