@@ -11,8 +11,35 @@ export class ChatController {
       const { question } = req.validatedData;
       const userId = req.user?.id || null;
 
-      // Step 1: Domain validation
-      if (!BiotechService.isBiotechRelated(question)) {
+      // ─────────────────────────────────────────────────────────────────────
+      // CHANGE: AI-powered intent classification (replaces keyword matching)
+      // WHY: Handles greetings, spelling errors, and context better than keywords
+      // ─────────────────────────────────────────────────────────────────────
+      const classification = await BiotechService.classifyQuestion(question);
+
+      // Handle greetings/casual conversation
+      if (classification.category === 'greeting') {
+        const greetingResponse = BiotechService.getGreetingResponse(question);
+        
+        const saved = await QueryService.create({
+          question,
+          user_id: userId,
+          status: QUERY_STATUS.COMPLETED,
+          response_text: greetingResponse
+        });
+
+        return res.json({
+          status: QUERY_STATUS.COMPLETED,
+          query_id: saved.id,
+          response_text: greetingResponse,
+          suggestions: BiotechService.getSuggestedQueries(),
+          visualization_type: null,
+          result_data: null
+        });
+      }
+
+      // Reject spam or completely unrelated queries
+      if (classification.category === 'spam' || classification.category === 'general_knowledge') {
         const rejection = BiotechService.getRejectionResponse();
         
         const saved = await QueryService.create({
@@ -24,14 +51,28 @@ export class ChatController {
 
         return res.json({
           ...rejection,
-          query_id: saved.id
+          query_id: saved.id,
+          suggestions: BiotechService.getSuggestedQueries()
         });
       }
 
-      // Step 2: Generate SQL with LLM
+      // ─────────────────────────────────────────────────────────────────────
+      // CHANGE: Use spell-corrected question if AI detected errors
+      // WHY: Improves SQL generation accuracy (e.g., "senolytics" → "cellular senescence")
+      // ─────────────────────────────────────────────────────────────────────
+      const processedQuestion = classification.corrected_question || question;
+      
+      if (classification.corrected_question) {
+        logger.info('Using spell-corrected question', {
+          original: question,
+          corrected: classification.corrected_question
+        });
+      }
+
+      // Step 2: Generate SQL with LLM (using corrected question)
       let llmResult;
       try {
-        llmResult = await LLMService.generateQuery(question);
+        llmResult = await LLMService.generateQuery(processedQuestion);
       } catch (error) {
         logger.error('LLM generation failed:', error);
         
@@ -46,7 +87,8 @@ export class ChatController {
           status: QUERY_STATUS.ERROR,
           query_id: saved.id,
           response_text: 'Failed to generate query. Please try rephrasing your question.',
-          error_detail: error.message
+          error_detail: error.message,
+          suggestions: BiotechService.getSuggestedQueries()
         });
       }
 
@@ -98,7 +140,8 @@ export class ChatController {
           query_id: saved.id,
           generated_sql: llmResult.sql,
           response_text: 'Unable to execute the generated query. Please rephrase your question.',
-          error_detail: error.message
+          error_detail: error.message,
+          suggestions: BiotechService.getSuggestedQueries()
         });
       }
 
@@ -108,12 +151,21 @@ export class ChatController {
         llmResult.visualization_type
       );
 
+      // ─────────────────────────────────────────────────────────────────────
+      // CHANGE: Include spell correction note in response if applicable
+      // WHY: Transparency - user knows their input was auto-corrected
+      // ─────────────────────────────────────────────────────────────────────
+      let responseText = llmResult.explanation;
+      if (autoFixed) {
+        responseText += ' *(Query was automatically optimized)*';
+      }
+
       // Step 5: Save to database
       const saved = await QueryService.create({
         question,
         user_id: userId,
         generated_sql: finalSql,
-        response_text: llmResult.explanation + (autoFixed ? ' (Query was automatically optimized)' : ''),
+        response_text: responseText,
         visualization_type: llmResult.visualization_type,
         result_data: JSON.stringify(resultData),
         chart_config: JSON.stringify(llmResult.chart_config || {}),
@@ -124,6 +176,7 @@ export class ChatController {
       logger.info('Query processed successfully', {
         queryId: saved.id,
         question,
+        corrected: classification.corrected_question,
         rowCount: rows.length,
         autoFixed
       });
@@ -133,14 +186,16 @@ export class ChatController {
         status: QUERY_STATUS.COMPLETED,
         query_id: saved.id,
         generated_sql: finalSql,
-        response_text: llmResult.explanation,
+        response_text: responseText,
         visualization_type: llmResult.visualization_type,
         result_data: resultData,
         chart_config: llmResult.chart_config || {},
-        auto_fixed: autoFixed
+        auto_fixed: autoFixed,
+        spell_corrected: !!classification.corrected_question
       });
 
     } catch (error) {
+      logger.error('Query processing error:', error);
       next(error);
     }
   }

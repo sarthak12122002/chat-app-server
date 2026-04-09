@@ -4,47 +4,52 @@ import { SchemaService } from './schema.service.js';
 
 
 export class LLMService {
-  static buildPrompt(question, schema) {
-  return `You are a biotech/longevity data analyst. Your job is to generate a MySQL query and provide context about what the question is asking — not the actual answer (you don't have the data).
+ static buildPrompt(question, schema) {
+    // ─────────────────────────────────────────────────────────────────────
+    // CHANGE: Added spelling correction instructions directly in SQL prompt
+    // WHY: Double-layer correction - classification + SQL generation both fix errors
+    // ─────────────────────────────────────────────────────────────────────
+    return `You are a biotech/longevity data analyst. Generate a MySQL query for this question.
 
-  ${schema}
+    ${schema}
 
-  Question: ${question}
+    Question: ${question}
 
-  INSTRUCTIONS:
-  1. Use EXACT column names from schema above
-  2. GROUP BY only with aggregates (COUNT, SUM, AVG, MAX, MIN)
-  3. LIMIT max 50 rows
-  4. "grant" in column names is fine — only SQL GRANT command is blocked
-  5. Generate COMPLETE SQL, never truncate
+    INSTRUCTIONS:
+    1. **AUTO-CORRECT SPELLINGS**: If question has typos in biotech terms, use correct spelling
+      - Examples: "senolytics" → "Cellular Senescence", "mTOR" → "Deregulated Nutrient Sensing"
+      - Use exact values from schema sample lists
+    2. Use EXACT column names from schema above
+    3. GROUP BY only with aggregates (COUNT, SUM, AVG, MAX, MIN)
+    4. LIMIT max 50 rows
+    5. Generate COMPLETE SQL, never truncate
 
-  EXPLANATION RULES:
-  - Explain what this question is analyzing and why it's relevant in longevity/biotech context
-  - Do NOT include any numbers, rankings, or specific values — you don't have the data yet
-  - Do NOT say "the results show..." or "the data indicates..." 
-  - Write 2 sentences max: what the question explores + why it matters in this domain
-  - Example good explanation: "This looks at which hallmarks of aging have the most drug development activity, helping identify where the field is most focused therapeutically."
-  - Never mention SQL, queries, databases, or technical details
+    EXPLANATION RULES:
+    - Explain what this question explores and why it's relevant in longevity/biotech
+    - Do NOT include numbers/results (you don't have data yet)
+    - Do NOT mention SQL, queries, or technical details
+    - 2 sentences max: what + why it matters
+    - Example: "This explores which hallmarks of aging have the most therapeutic focus, helping identify where drug development is concentrated."
 
-  VISUALIZATION RULES:
-  - Rankings/comparisons (top N) → bar_chart
-  - Proportions that sum to 100% → pie_chart
-  - Trends over time/dates → line_chart
-  - Single number answer → metric
-  - Everything else → table
+    VISUALIZATION RULES:
+    - Rankings/comparisons → bar_chart
+    - Proportions → pie_chart  
+    - Trends over time → line_chart
+    - Single number → metric
+    - Everything else → table
 
-  Output valid JSON only, no markdown:
-  {
-    "sql": "COMPLETE SQL HERE",
-    "visualization_type": "table|bar_chart|pie_chart|line_chart|metric",
-    "explanation": "2 sentence context about what this question explores and why it matters.",
-    "chart_config": {
-      "x_key": "exact_column_name",
-      "y_key": "exact_column_name",
-      "title": "Concise chart title"
-    }
-  }`;
-}
+    Output valid JSON only (no markdown):
+    {
+      "sql": "COMPLETE SQL HERE",
+      "visualization_type": "table|bar_chart|pie_chart|line_chart|metric",
+      "explanation": "2 sentences about what this explores and why it matters",
+      "chart_config": {
+        "x_key": "exact_column_name",
+        "y_key": "exact_column_name",
+        "title": "Chart title"
+      }
+    }`;
+  }
 
   // Keep all provider methods unchanged
   static async generateQueryWithAnthropic(question, schema, client, model) {
@@ -70,7 +75,7 @@ export class LLMService {
         { role: 'user', content: prompt }
       ],
       response_format: { type: 'json_object' },
-      max_tokens: 2000
+      max_completion_tokens: 2000
     });
 
     return JSON.parse(response.choices[0].message.content);

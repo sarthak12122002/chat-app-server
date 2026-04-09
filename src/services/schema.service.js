@@ -3,7 +3,6 @@ import { logger } from '../utils/logger.js';
 import { schemaCache } from '../utils/schemaCache.js';
 
 // ─── System table prefixes to always exclude ──────────────────────────────────
-// These are Django internals, auth, email infra — never relevant to business queries
 const SYSTEM_TABLE_PREFIXES = [
   'auth_', 'django_', 'email_service_', 'excel_upload_',
 ];
@@ -17,7 +16,6 @@ const SYSTEM_TABLE_EXACT = new Set([
   'data_platform_googlenewsarticles',
 ]);
 
-// Columns that are never useful for business queries
 const EXCLUDE_COLUMNS = new Set([
   'created_at', 'updated_at', 'deleted_at', 'modified_at',
   'created_by', 'updated_by', 'changed_at', 'changed_by',
@@ -45,8 +43,127 @@ const VIEW_PRIORITY = {
   company_aggregate: 4,
 };
 
-// Max tables to include in a single prompt
 const MAX_TABLES_IN_CONTEXT = 3;
+
+// ─── NEW: Semantic Query Classification Patterns ──────────────────────────────
+const QUERY_PATTERNS = {
+  FUNDING: {
+    regex: /fund|raise|invest|capital|valuation|series|ipo|revenue|financial|money|million|billion/i,
+    forceTables: ['data_platform_companypitchbook'],
+    sampleFields: ['PitchbookRaiseToDate', 'PitchbookLastKnownValuation'],
+  },
+  CLINICAL: {
+    regex: /phase|trial|fda|approved|clinical|preclinical|development|regulatory|marketed/i,
+    forceTables: ['v_company_asset'],
+    sampleFields: ['DevelopmentPhase', 'ClinicalPhase'],
+  },
+  GEOGRAPHIC: {
+    regex: /countr|location|city|headquarter|hq|uk|usa|us|china|europe|asia|region|where.*based/i,
+    forceTables: ['v_companies'],
+    sampleFields: ['hq_country', 'hq_city'],
+  },
+  PIPELINE: {
+    regex: /drug|asset|pipeline|therap|treatment|medicine|compound|molecule|indication|disease/i,
+    forceTables: ['v_company_asset'],
+    sampleFields: ['TherapeuticArea', 'TherapeuticModality'],
+  },
+  HALLMARK: {
+    regex: /hallmark|aging|ageing|senescence|longevity|lifespan|healthspan|mtor|sasp|senolytic/i,
+    forceTables: ['v_company_asset', 'v_hallmark_of_aging'],
+    sampleFields: ['HallmarkOfAging'],
+  },
+  PEOPLE: {
+    regex: /founder|ceo|executive|team|management|leader|person|people|scientist|researcher/i,
+    forceTables: ['data_platform_people'],
+    sampleFields: ['PeoplePosition'],
+  },
+  MODALITY: {
+    regex: /modalit|antibod|small molecule|gene therap|cell therap|first.in.class|mechanism/i,
+    forceTables: ['v_company_asset'],
+    sampleFields: ['TherapeuticModality'],
+  },
+  OWNERSHIP: {
+    regex: /public|private|ownership|stock|traded|financing.*status/i,
+    forceTables: ['v_companies'],
+    sampleFields: ['financing_status', 'ownership_status'],
+  },
+};
+
+// ─── NEW: Sample value cache configuration ────────────────────────────────────
+const SAMPLE_VALUE_CONFIG = {
+  // JSON columns that need flattening
+  HallmarkOfAging: {
+    query: `
+      SELECT DISTINCT jt.hallmark_value 
+      FROM v_company_asset,
+      JSON_TABLE(
+        COALESCE(HallmarkOfAging, '[]'),
+        '$[*]' COLUMNS(hallmark_value VARCHAR(255) PATH '$')
+      ) AS jt
+      WHERE jt.hallmark_value IS NOT NULL
+      ORDER BY jt.hallmark_value
+      LIMIT 12
+    `,
+    extractField: 'hallmark_value',
+  },
+  TherapeuticArea: {
+    query: `
+      SELECT DISTINCT jt.area_value 
+      FROM v_company_asset,
+      JSON_TABLE(
+        COALESCE(TherapeuticArea, '[]'),
+        '$[*]' COLUMNS(area_value VARCHAR(255) PATH '$')
+      ) AS jt
+      WHERE jt.area_value IS NOT NULL
+      ORDER BY jt.area_value
+      LIMIT 10
+    `,
+    extractField: 'area_value',
+  },
+  // Regular columns
+  DevelopmentPhase: {
+    table: 'v_company_asset',
+    limit: 8,
+  },
+  ClinicalPhase: {
+    table: 'v_company_asset',
+    limit: 6,
+  },
+  TherapeuticModality: {
+    table: 'v_company_asset',
+    limit: 8,
+  },
+  hq_country: {
+    table: 'v_companies',
+    limit: 15,
+  },
+  hq_city: {
+    table: 'v_companies',
+    limit: 12,
+  },
+  financing_status: {
+    table: 'v_companies',
+    limit: 6,
+  },
+  ownership_status: {
+    table: 'v_companies',
+    limit: 4,
+  },
+  PitchbookRaiseToDate: {
+    table: 'data_platform_companypitchbook',
+    limit: 5,
+    format: (val) => `$${(val / 1000000).toFixed(0)}M`, // Format as millions
+  },
+  PitchbookLastKnownValuation: {
+    table: 'data_platform_companypitchbook',
+    limit: 5,
+    format: (val) => `$${(val / 1000000).toFixed(0)}M`,
+  },
+  PeoplePosition: {
+    table: 'data_platform_people',
+    limit: 8,
+  },
+};
 
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -56,19 +173,30 @@ export class SchemaService {
   // Structure: Map<tableName, { type, columns, foreignKeys, jsonColumns, keywordSet }>
   static _catalog = null;
 
-  // ─── Entry point: schema string for a specific question ──────────────────────
+  // ─── ENHANCED: Entry point with semantic classification ───────────────────────
   static async getSchemaForQuestion(question) {
     await this._ensureCatalog();
 
     const lower = question.toLowerCase();
-    const matched = this._scoreAndSelectTables(lower);
+    
+    // NEW: Classify query semantically
+    const classification = this._classifyQuery(lower);
+    
+    // Select tables (now informed by classification)
+    const matched = this._scoreAndSelectTables(lower, classification);
+
+    // NEW: Fetch sample values for matched tables
+    const sampleValues = await this._fetchSampleValues(matched, classification);
 
     logger.info('Schema context selected', {
       question: question.substring(0, 80),
+      classification: classification.types,
       tables: matched.map(t => t.name),
+      samplesLoaded: Object.keys(sampleValues),
     });
 
-    const parts = matched.map(t => this._renderTableBlock(t));
+    // Render table blocks with sample values
+    const parts = matched.map(t => this._renderTableBlock(t, sampleValues));
 
     const schema = [
       '# DATABASE SCHEMA (MySQL) — Relevant tables only\n',
@@ -83,13 +211,46 @@ export class SchemaService {
     return schema;
   }
 
+  // ─── NEW: Semantic Query Classification ───────────────────────────────────────
+  static _classifyQuery(lowerQuestion) {
+    const types = [];
+    const forceTables = new Set();
+    const sampleFields = new Set();
+
+    for (const [type, pattern] of Object.entries(QUERY_PATTERNS)) {
+      if (pattern.regex.test(lowerQuestion)) {
+        types.push(type);
+        
+        // Collect force-include tables
+        for (const table of pattern.forceTables) {
+          forceTables.add(table);
+        }
+        
+        // Collect sample fields needed
+        for (const field of pattern.sampleFields) {
+          sampleFields.add(field);
+        }
+      }
+    }
+
+    logger.debug('Query classified', { 
+      types, 
+      forceTables: Array.from(forceTables),
+      sampleFields: Array.from(sampleFields)
+    });
+
+    return {
+      types,
+      forceTables: Array.from(forceTables),
+      sampleFields: Array.from(sampleFields),
+    };
+  }
+
   // ─── Build the full catalog from DB (runs once, then cached) ─────────────────
   static async _ensureCatalog() {
-    // Check in-memory first (fastest)
-  if (this._catalog) return;
+    if (this._catalog) return;
 
-  // Check schemaCache (survives across requests, has TTL from config)
-  const cached = schemaCache.get('catalog');
+    const cached = schemaCache.get('catalog');
     if (cached) {
       this._catalog = cached;
       logger.debug('Schema catalog restored from cache');
@@ -99,7 +260,6 @@ export class SchemaService {
     logger.info('Building schema catalog from DB...');
     this._catalog = new Map();
 
-    // 1. Get all tables and views
     const [objects] = await mysqlDb.raw(`
       SELECT 
         TABLE_NAME as name,
@@ -111,7 +271,6 @@ export class SchemaService {
         TABLE_NAME
     `);
 
-    // 2. Get all columns in one query (not N queries)
     const [allColumns] = await mysqlDb.raw(`
       SELECT
         TABLE_NAME as tableName,
@@ -125,7 +284,6 @@ export class SchemaService {
       ORDER BY TABLE_NAME, ORDINAL_POSITION
     `);
 
-    // 3. Get all foreign keys in one query
     const [allFKs] = await mysqlDb.raw(`
       SELECT
         TABLE_NAME as tableName,
@@ -137,11 +295,9 @@ export class SchemaService {
         AND REFERENCED_TABLE_NAME IS NOT NULL
     `);
 
-    // Group columns and FKs by table
     const columnsByTable = this._groupBy(allColumns, 'tableName');
     const fksByTable = this._groupBy(allFKs, 'tableName');
 
-    // 4. Build catalog entries
     for (const obj of objects) {
       if (this._isSystemTable(obj.name)) continue;
 
@@ -150,12 +306,10 @@ export class SchemaService {
 
       const foreignKeys = fksByTable[obj.name] || [];
 
-      // Detect JSON columns
       const jsonColumns = rawColumns
         .filter(c => c.dataType === 'json' || c.columnType?.toLowerCase() === 'json')
         .map(c => c.name);
 
-      // Build keyword set from table name + column names (auto-discovery)
       const keywordSet = this._buildKeywordSet(obj.name, rawColumns);
 
       this._catalog.set(obj.name, {
@@ -173,22 +327,28 @@ export class SchemaService {
     logger.info(`Catalog built: ${this._catalog.size} usable tables/views`);
   }
 
-  // ─── Score all tables against the question, return top N ─────────────────────
-  static _scoreAndSelectTables(lowerQuestion) {
+  // ─── ENHANCED: Score tables with semantic classification boost ────────────────
+  static _scoreAndSelectTables(lowerQuestion, classification) {
     const scores = [];
 
     for (const [, entry] of this._catalog) {
       let score = 0;
 
-      // Keyword match score
+      // Keyword match score (existing logic)
       for (const kw of entry.keywordSet) {
-        if (lowerQuestion.includes(kw)) score += kw.length > 5 ? 2 : 1; // longer match = higher score
+        if (lowerQuestion.includes(kw)) score += kw.length > 5 ? 2 : 1;
       }
 
-      // View bonus — prefer views over base tables
+      // View bonus
       score += entry.priority;
 
-      if (score > entry.priority) { // only include if question keywords actually matched
+      // NEW: Semantic classification boost
+      if (classification.forceTables.includes(entry.name)) {
+        score += 15; // Strong boost for semantically required tables
+        logger.debug(`Semantic boost applied to ${entry.name}`, { boost: 15 });
+      }
+
+      if (score > entry.priority) {
         scores.push({ ...entry, score });
       }
     }
@@ -196,9 +356,9 @@ export class SchemaService {
     // Sort by score desc
     scores.sort((a, b) => b.score - a.score);
 
-    // Always include v_companies as the anchor table (FK hub)
     const result = scores.slice(0, MAX_TABLES_IN_CONTEXT);
-    // AFTER — only inject if results are weak (no strong match found)
+    
+    // Existing fallback logic
     const topScore = result[0]?.score ?? 0;
     const hasCompanies = result.some(t => t.name === 'v_companies');
     const isAssetOnlyQuery = result.some(t => t.name === 'v_company_asset' && t.score > 8);
@@ -211,14 +371,75 @@ export class SchemaService {
     return result;
   }
 
+  // ─── NEW: Fetch sample values for relevant fields ─────────────────────────────
+  static async _fetchSampleValues(tables, classification) {
+    const samples = {};
+    const fieldsToFetch = new Set(classification.sampleFields);
+
+    // Add fields from selected tables' JSON columns
+    for (const table of tables) {
+      for (const jsonCol of table.jsonColumns) {
+        if (SAMPLE_VALUE_CONFIG[jsonCol]) {
+          fieldsToFetch.add(jsonCol);
+        }
+      }
+    }
+
+    // Fetch each field's sample values
+    for (const field of fieldsToFetch) {
+      const cacheKey = `sample_${field}`;
+      const cached = schemaCache.get(cacheKey);
+
+      if (cached) {
+        samples[field] = cached;
+        continue;
+      }
+
+      const config = SAMPLE_VALUE_CONFIG[field];
+      if (!config) continue;
+
+      try {
+        let values = [];
+
+        if (config.query) {
+          // Custom query (for JSON columns)
+          const [results] = await mysqlDb.raw(config.query);
+          values = results.map(r => r[config.extractField]);
+        } else if (config.table) {
+          // Standard column query
+          const [results] = await mysqlDb.raw(`
+            SELECT DISTINCT ${field} 
+            FROM ${config.table} 
+            WHERE ${field} IS NOT NULL 
+            ORDER BY ${field}
+            LIMIT ${config.limit}
+          `);
+          values = results.map(r => {
+            const val = r[field];
+            return config.format ? config.format(val) : val;
+          });
+        }
+
+        if (values.length > 0) {
+          samples[field] = values;
+          schemaCache.set(cacheKey, values);
+          logger.debug(`Loaded ${values.length} sample values for ${field}`);
+        }
+      } catch (error) {
+        logger.error(`Failed to fetch samples for ${field}:`, error);
+      }
+    }
+
+    return samples;
+  }
+
   // ─── Auto-build keyword set from table name and column names ─────────────────
   static _buildKeywordSet(tableName, columns) {
     const keywords = new Set();
 
-    // From table name: split on _ and lowercase
     const tableWords = tableName
-      .replace(/^v_/, '')           // strip view prefix
-      .replace(/^data_platform_/, '') // strip app prefix
+      .replace(/^v_/, '')
+      .replace(/^data_platform_/, '')
       .split('_')
       .filter(w => w.length > 2);
 
@@ -226,34 +447,32 @@ export class SchemaService {
       keywords.add(word.toLowerCase());
     }
 
-    // Add semantic aliases per table
     const TABLE_ALIASES = {
-      v_companies:                  ['company', 'companies', 'startup', 'firm', 'organization', 'location', 'country', 'city', 'hq', 'founded', 'employees', 'financing', 'public', 'private', 'ownership'],
-      v_company_asset:              ['drug', 'asset', 'pipeline', 'therapy', 'clinical', 'preclinical', 'trial', 'moa', 'modality', 'mechanism', 'indication', 'hallmark', 'phase', 'treatment', 'biologic', 'molecule'],
+      v_companies: ['company', 'companies', 'startup', 'firm', 'organization', 'location', 'country', 'city', 'hq', 'founded', 'employees', 'financing', 'public', 'private', 'ownership'],
+      v_company_asset: ['drug', 'asset', 'pipeline', 'therapy', 'clinical', 'preclinical', 'trial', 'moa', 'modality', 'mechanism', 'indication', 'hallmark', 'phase', 'treatment', 'biologic', 'molecule'],
       data_platform_companypitchbook: ['funding', 'raised', 'valuation', 'investment', 'capital', 'finance', 'raise', 'deal', 'investor', 'series', 'ipo', 'revenue'],
-      data_platform_company:        ['grant', 'grants', 'longevity', 'level', 'overview', 'platform', 'detection', 'prevention', 'renewal'],
-      data_platform_people:         ['people', 'person', 'team', 'founder', 'ceo', 'executive', 'management', 'biography', 'position'],
-      data_platform_companypatent:  ['patent', 'patents', 'intellectual', 'property', 'filing', 'expiration', 'ip'],
-      data_platform_news:           ['news', 'article', 'headline', 'press', 'media', 'publication', 'published'],
-      data_platform_pitchbookdeal:  ['deal', 'deals', 'round', 'series', 'investment round', 'financing round'],
-      v_therapeutic_area:           ['therapeutic', 'area', 'cardiovascular', 'oncology', 'neurology', 'immunology', 'metabolic', 'indication'],
-      v_hallmark_of_aging:          ['hallmark', 'aging', 'ageing', 'senescence', 'inflammation', 'epigenetic'],
-      v_asset_validation_summary:   ['validation', 'validated', 'confidence', 'review', 'accuracy'],
-      v_validation_dashboard:       ['dashboard', 'summary', 'statistics', 'overview', 'total', 'count'],
-      company_aggregate:            ['categories', 'aggregate', 'categorized'],
-      data_platform_companyasset:   ['asset', 'drug', 'pipeline', 'modality', 'phase'],
-      data_platform_address:        ['address', 'location', 'street', 'city', 'state', 'zip', 'country'],
-      data_platform_score:          ['score', 'rating', 'assessment', 'evaluation'],
+      data_platform_company: ['grant', 'grants', 'longevity', 'level', 'overview', 'platform', 'detection', 'prevention', 'renewal'],
+      data_platform_people: ['people', 'person', 'team', 'founder', 'ceo', 'executive', 'management', 'biography', 'position'],
+      data_platform_companypatent: ['patent', 'patents', 'intellectual', 'property', 'filing', 'expiration', 'ip'],
+      data_platform_news: ['news', 'article', 'headline', 'press', 'media', 'publication', 'published'],
+      data_platform_pitchbookdeal: ['deal', 'deals', 'round', 'series', 'investment round', 'financing round'],
+      v_therapeutic_area: ['therapeutic', 'area', 'cardiovascular', 'oncology', 'neurology', 'immunology', 'metabolic', 'indication'],
+      v_hallmark_of_aging: ['hallmark', 'aging', 'ageing', 'senescence', 'inflammation', 'epigenetic'],
+      v_asset_validation_summary: ['validation', 'validated', 'confidence', 'review', 'accuracy'],
+      v_validation_dashboard: ['dashboard', 'summary', 'statistics', 'overview', 'total', 'count'],
+      company_aggregate: ['categories', 'aggregate', 'categorized'],
+      data_platform_companyasset: ['asset', 'drug', 'pipeline', 'modality', 'phase'],
+      data_platform_address: ['address', 'location', 'street', 'city', 'state', 'zip', 'country'],
+      data_platform_score: ['score', 'rating', 'assessment', 'evaluation'],
     };
 
     const aliases = TABLE_ALIASES[tableName] || [];
     for (const alias of aliases) keywords.add(alias);
 
-    // From column names: extract meaningful words
     for (const col of columns) {
       const words = col.name
-        .replace(/([A-Z])/g, ' $1')    // split PascalCase: CompanyName → Company Name
-        .replace(/_/g, ' ')             // split snake_case
+        .replace(/([A-Z])/g, ' $1')
+        .replace(/_/g, ' ')
         .toLowerCase()
         .split(' ')
         .filter(w => w.length > 3 && !STOP_WORDS.has(w));
@@ -264,34 +483,40 @@ export class SchemaService {
     return keywords;
   }
 
-  // ─── Render a compact table block for LLM ────────────────────────────────────
-  static _renderTableBlock(entry) {
+  // ─── ENHANCED: Render table block with sample values ──────────────────────────
+  static _renderTableBlock(entry, sampleValues = {}) {
     const { name, isView, columns, foreignKeys, jsonColumns } = entry;
     const typeLabel = isView ? 'VIEW' : 'TABLE';
 
-    // Column lines
+    // Column lines with sample values
     const colLines = columns.map(c => {
       const tags = [];
       if (c.key === 'PRI') tags.push('PK');
-      // FK detection — handles both snake_case and PascalCase
+      
       const isFk = foreignKeys.some(fk => fk.columnName === c.name);
       if (isFk) {
         const fk = foreignKeys.find(fk => fk.columnName === c.name);
         tags.push(`FK→${fk.refTable}.${fk.refColumn}`);
       }
       if (c.dataType === 'json') tags.push('JSON⚠️');
+      
       const tagStr = tags.length ? ` [${tags.join(', ')}]` : '';
-      return `  ${c.name} (${c.dataType})${tagStr}`;
+      
+      // NEW: Add sample values if available
+      const samples = sampleValues[c.name];
+      const sampleStr = samples && samples.length > 0
+        ? `\n    → Samples: ${samples.slice(0, 5).map(s => `"${s}"`).join(', ')}${samples.length > 5 ? '...' : ''}`
+        : '';
+      
+      return `  ${c.name} (${c.dataType})${tagStr}${sampleStr}`;
     }).join('\n');
 
-    // FK summary for join hints
     const fkLines = foreignKeys.length
       ? foreignKeys.map(fk =>
           `  JOIN ${fk.refTable} ON ${name}.${fk.columnName} = ${fk.refTable}.${fk.refColumn}`
         ).join('\n')
       : null;
 
-    // JSON column callout
     const jsonNote = jsonColumns.length
       ? `⚠️ JSON columns: ${jsonColumns.join(', ')} → use JSON_CONTAINS(col, '"Value"') or JSON_EXTRACT(col, '$.key')`
       : null;
@@ -318,6 +543,7 @@ export class SchemaService {
 
     rules.push('- Only SELECT statements. Always LIMIT results (max 50).');
     rules.push('- No GROUP BY without an aggregate (COUNT, SUM, AVG, MAX, MIN).');
+    rules.push('- Use exact sample values shown above when filtering.');
 
     if (hasMixedCase) {
       rules.push('- v_companies uses lowercase columns (name, hq_country). data_platform_company uses PascalCase (CompanyName, EmployeesCount). Never mix columns between them.');
@@ -339,10 +565,10 @@ export class SchemaService {
     return rules.join('\n');
   }
 
-  // ─── Dynamic examples based on matched tables + their JSON columns ────────────
+  // ─── Dynamic examples based on matched tables ─────────────────────────────────
   static _buildExamples(tables) {
     const EXAMPLE_MAP = {
-      v_companies: `SELECT name, hq_country, financing_status, employees FROM v_companies WHERE hq_country = 'USA' ORDER BY employees DESC LIMIT 20`,
+      v_companies: `SELECT name, hq_country, financing_status, employees FROM v_companies WHERE hq_country = 'United States' ORDER BY employees DESC LIMIT 20`,
       v_company_asset: `SELECT AssetName, DevelopmentPhase, TherapeuticIndication FROM v_company_asset WHERE JSON_CONTAINS(TherapeuticArea, '"Cardiovascular"') LIMIT 20`,
       data_platform_companypitchbook: `SELECT c.CompanyName, p.PitchbookRaiseToDate, p.PitchbookLastKnownValuation FROM data_platform_company c JOIN data_platform_companypitchbook p ON c.CompanyID = p.company_id ORDER BY p.PitchbookRaiseToDate DESC LIMIT 10`,
       v_therapeutic_area: `SELECT CategoryName FROM v_therapeutic_area ORDER BY CategoryName LIMIT 50`,
@@ -391,14 +617,13 @@ export class SchemaService {
   }
 
   static clearCache() {
-    this._catalog = null;       // clear in-memory
-    schemaCache.clear();        // clear cache (handles TTL timestamps too)
+    this._catalog = null;
+    schemaCache.clear();
     logger.info('Schema catalog cleared — will rebuild on next request');
   }
 
-  // Backward compat for health checks
   static async getSchemaDescription() {
-    await this._ensureCatalog(); // just ensure catalog exists, no schema string built
+    await this._ensureCatalog();
     return `Catalog loaded: ${this._catalog.size} tables`;
   }
 
@@ -412,7 +637,7 @@ export class SchemaService {
   }
 }
 
-// ─── Stop words — excluded from auto keyword extraction ──────────────────────
+// ─── Stop words ───────────────────────────────────────────────────────────────
 const STOP_WORDS = new Set([
   'the', 'and', 'for', 'from', 'with', 'this', 'that', 'have',
   'date', 'flag', 'link', 'url', 'type', 'name', 'note', 'notes',
