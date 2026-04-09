@@ -398,7 +398,8 @@ export class SchemaService {
 
   // Backward compat for health checks
   static async getSchemaDescription() {
-    return this.getSchemaForQuestion('show me companies');
+    await this._ensureCatalog(); // just ensure catalog exists, no schema string built
+    return `Catalog loaded: ${this._catalog.size} tables`;
   }
 
   static async getSchemaStats(question = 'show me companies') {
