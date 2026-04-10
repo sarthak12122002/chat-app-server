@@ -8,12 +8,9 @@ const SYSTEM_TABLE_PREFIXES = [
 ];
 
 const SYSTEM_TABLE_EXACT = new Set([
-  'result_cache', 'asset_pos', 'asset_validation',
+  'result_cache',
   'data_platform_otp', 'data_platform_usersettings',
-  'data_platform_companyaudit', 'data_platform_companyapproval',
-  'data_platform_companywatch', 'data_platform_companywatchlistupdates',
-  'data_platform_companyimage', 'data_platform_samplecompany',
-  'data_platform_googlenewsarticles',
+  'data_platform_samplecompany'
 ]);
 
 const EXCLUDE_COLUMNS = new Set([
@@ -43,7 +40,7 @@ const VIEW_PRIORITY = {
   company_aggregate: 4,
 };
 
-const MAX_TABLES_IN_CONTEXT = 3;
+const MAX_TABLES_IN_CONTEXT = 4;
 
 // ─── NEW: Semantic Query Classification Patterns ──────────────────────────────
 const QUERY_PATTERNS = {
@@ -207,7 +204,6 @@ export class SchemaService {
 
     const tokens = Math.ceil(schema.length / 4);
     logger.info(`Schema built: ${schema.length} chars ~${tokens} tokens, ${matched.length} tables`);
-
     return schema;
   }
 

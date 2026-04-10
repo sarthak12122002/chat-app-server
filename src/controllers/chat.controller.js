@@ -12,7 +12,7 @@ export class ChatController {
       // CHANGE: Now accepts session_id and history from frontend
       // WHY: Enable conversation threading and context-aware responses
       // ─────────────────────────────────────────────────────────────────────
-      const { question, history = [], session_id = null } = req.validatedData;
+      const { question, history = [], session_id } = req.validatedData;
       const userId = req.user?.id || null;
 
       // Step 1: AI-powered domain validation
@@ -47,7 +47,7 @@ export class ChatController {
         const saved = await QueryService.create({
           question,
           user_id: userId,
-          session_id, // NEW
+          session_id: session_id, // NEW
           status: QUERY_STATUS.REJECTED,
           response_text: rejection.response_text
         });
@@ -83,7 +83,7 @@ export class ChatController {
         const saved = await QueryService.create({
           question,
           user_id: userId,
-          session_id, // NEW
+          session_id: session_id, // NEW
           status: QUERY_STATUS.ERROR,
           response_text: 'Failed to generate query. Please try rephrasing your question.'
         });
@@ -151,14 +151,14 @@ export class ChatController {
       const saved = await QueryService.create({
         question,
         user_id: userId,
-        session_id, // NEW: Link to session
         generated_sql: finalSql,
         response_text: responseText,
         visualization_type: llmResult.visualization_type,
         result_data: JSON.stringify(resultData),
         chart_config: JSON.stringify(llmResult.chart_config || {}),
         status: QUERY_STATUS.COMPLETED,
-        is_saved: false
+        is_saved: false,
+        session_id: session_id, // NEW: Link to session
       });
 
       // ─────────────────────────────────────────────────────────────────────
@@ -171,7 +171,7 @@ export class ChatController {
 
       logger.info('Query processed successfully', {
         queryId: saved.id,
-        session_id,
+        session_id: session_id,
         question,
         corrected: classification.corrected_question,
         rowCount: rows.length,

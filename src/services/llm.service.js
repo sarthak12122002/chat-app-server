@@ -1,6 +1,7 @@
 import { getLLMClient } from '../config/llm.js';
 import { logger } from '../utils/logger.js';
 import { SchemaService } from './schema.service.js';
+import { encode } from "gpt-tokenizer";
 
 
 export class LLMService {
@@ -67,6 +68,9 @@ export class LLMService {
 
   static async generateQueryWithOpenAI(question, schema, client, model) {
     const prompt = this.buildPrompt(question, schema);
+
+     const realTokens = encode(prompt).length;
+     logger.info(`Real Token Size: ${realTokens}`);
 
     const response = await client.chat.completions.create({
       model: model,
