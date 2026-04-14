@@ -4,6 +4,7 @@ import { SQLService } from '../services/sql.service.js';
 import { QueryService } from '../services/query.service.js';
 import { QUERY_STATUS } from '../utils/constants.js';
 import { logger } from '../utils/logger.js';
+import { ChatSession } from '../models/chatSession.model.js';
 
 export class ChatController {
   static async processQuery(req, res, next) {
@@ -16,7 +17,7 @@ export class ChatController {
       const userId = req.user?.id || null;
 
       // Step 1: AI-powered domain validation
-      const classification = await BiotechService.classifyQuestion(question);
+      const classification = await BiotechService.classifyQuestion(question, history);
 
       // Handle greetings
       if (classification.category === 'greeting') {
@@ -96,6 +97,52 @@ export class ChatController {
           suggestions: BiotechService.getSuggestedQueries()
         });
       }
+
+      // ═══════════════════════════════════════════════════════════════════════
+      // ── If agent already executed SQL and returned data, skip SQL execution ──
+      // ═══════════════════════════════════════════════════════════════════════
+      if (llmResult._fromAgent && llmResult._agentResultData) {
+        const resultData = llmResult._agentResultData;
+        const responseText = llmResult.explanation || '';
+        
+        const saved = await QueryService.create({
+          question,
+          user_id: userId,
+          generated_sql: llmResult.sql || '',
+          response_text: responseText,
+          visualization_type: llmResult.visualization_type,
+          result_data: JSON.stringify(resultData),
+          chart_config: JSON.stringify(llmResult.chart_config || {}),
+          status: QUERY_STATUS.COMPLETED,
+          is_saved: false,
+          session_id: session_id,
+        });
+        
+        if (session_id) {
+          await ChatSession.touch(session_id);
+        }
+        
+        logger.info('Agent query saved', { 
+          queryId: saved.id, 
+          session_id,
+          iterations: llmResult._agentIterations 
+        });
+        
+        return res.json({
+          status: QUERY_STATUS.COMPLETED,
+          query_id: saved.id,
+          generated_sql: llmResult.sql || '',
+          response_text: responseText,
+          visualization_type: llmResult.visualization_type,
+          result_data: resultData,
+          chart_config: llmResult.chart_config || {},
+          auto_fixed: false,
+          spell_corrected: !!classification.corrected_question
+        });
+      }
+      // ═══════════════════════════════════════════════════════════════════════
+      // ── End agent short-circuit ────────────────────────────────────────────
+      // ═══════════════════════════════════════════════════════════════════════
 
       // Step 3: Execute SQL with auto-fix retry
       let rows;

@@ -1,7 +1,14 @@
 import { z } from 'zod';
 
+const chatHistoryMessageSchema = z.object({
+  role: z.enum(['user', 'assistant', 'system']),
+  content: z.string()
+});
+
 export const chatQuerySchema = z.object({
-  question: z.string().min(3).max(1000)
+  question: z.string().min(3).max(1000),
+  session_id: z.string().uuid().optional(),
+  history: z.array(chatHistoryMessageSchema).optional().default([])
 });
 
 export const updateQuerySchema = z.object({

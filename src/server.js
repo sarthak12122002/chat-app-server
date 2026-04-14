@@ -31,7 +31,8 @@ app.use((req, res, next) => {
   logger.info('Incoming request', {
     method: req.method,
     path: req.path,
-    ip: req.ip
+    ip: req.ip,
+    user_id: req.user?.id || null
   });
   next();
 });

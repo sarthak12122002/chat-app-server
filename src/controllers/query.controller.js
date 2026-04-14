@@ -12,7 +12,13 @@ export class QueryController {
       }
 
       const queries = await QueryService.list(options);
-      res.json(queries);
+      const parsed = queries.map(q => ({
+      ...q,
+      result_data: q.result_data ? JSON.parse(q.result_data) : null,
+      chart_config: q.chart_config ? JSON.parse(q.chart_config) : null,
+    }));
+
+      res.json(parsed);
     } catch (error) {
       next(error);
     }

@@ -1,8 +1,11 @@
 import express from 'express';
 import { SessionController } from '../controllers/session.controller.js';
 import { body, param, query } from 'express-validator';
+import { authMiddleware } from '../middleware/auth.middleware.js';
 
 const router = express.Router();
+
+router.use(authMiddleware(true));
 
 /**
  * Session Routes

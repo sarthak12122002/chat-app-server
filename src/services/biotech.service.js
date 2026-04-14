@@ -8,26 +8,61 @@ import { logger } from '../utils/logger.js';
 export class BiotechService {
   
   /**
-   * NEW: AI-powered domain detection + greeting/casual conversation handler
-   * WHY: Allows natural conversations (hi, hello, thanks) while still filtering spam
-   * CHANGE: Removed hardcoded BIOTECH_KEYWORDS, now uses LLM to classify intent
+   * UPDATED: AI-powered domain detection with conversation history support
+   * WHY: Allows follow-up questions without biotech keywords (e.g., "tell me about Unity Biotech")
+   * CHANGE: Now accepts history parameter for context-aware classification
+   * 
+   * @param {string} question - Current user question
+   * @param {Array} history - Previous conversation messages [{role, content}]
+   * @returns {Object} Classification result
    */
-  static async classifyQuestion(question) {
+  static async classifyQuestion(question, history = []) {
     try {
       const { client, type, model } = getLLMClient();
-      
-      // OPTIMIZATION: Use faster, cheaper model for classification (no schema needed)
-      const classificationPrompt = `You are a conversational assistant that classifies user questions into categories.
 
-      Question: "${question}"
+      // ─────────────────────────────────────────────────────────────────────
+      // NEW: Build context from previous conversation
+      // WHY: If user previously asked about biotech, assume follow-ups are related
+      // ─────────────────────────────────────────────────────────────────────
+      let conversationContext = '';
+      
+      if (history && history.length > 0) {
+        // Take last 2 exchanges (4 messages) for context
+        const recentHistory = history.slice(-4);
+        
+        conversationContext = `
+
+      **CONVERSATION HISTORY:**
+      ${recentHistory.map(m => `${m.role === 'user' ? 'User' : 'Assistant'}: ${m.content.substring(0, 150)}`).join('\n')}
+
+      **IMPORTANT:** If the conversation history shows biotech-related discussion, classify follow-up questions as "biotech_query" even if they don't contain explicit biotech keywords.
+
+      Examples:
+      - After discussing "companies targeting cellular senescence", if user asks "tell me about Unity Biotechnology" → biotech_query
+      - After showing "Phase 2 trials", if user asks "what about Phase 3?" → biotech_query
+      - After any biotech discussion, questions like "show me more", "what about [company name]?" → biotech_query
+      `;
+            }
+            
+            // OPTIMIZATION: Use faster, cheaper model for classification (no schema needed)
+            const classificationPrompt = `You are a conversational assistant that classifies user questions into categories.
+      ${conversationContext}
+
+      **CURRENT QUESTION:** "${question}"
 
       Classify this into ONE of these categories:
       1. "greeting" - Hello, hi, thanks, goodbye, how are you, casual conversation
-      2. "biotech_query" - Questions about biotech/pharma companies, drugs, clinical trials, FDA approvals, diseases, therapeutics, longevity, aging, healthcare
-      3. "general_knowledge" - General questions about science, health, or non-biotech topics
+      2. "biotech_query" - Questions about biotech/pharma companies, drugs, clinical trials, FDA approvals, diseases, therapeutics, longevity, aging, healthcare, OR follow-up questions in an ongoing biotech conversation
+      3. "general_knowledge" - General questions about science, health, or non-biotech topics (NOT in biotech context)
       4. "spam" - Gibberish, unrelated topics, nonsense
 
-      SPELLING CORRECTION:
+      **CLASSIFICATION RULES:**
+      - If conversation history exists and is biotech-related, assume current question is a follow-up (biotech_query)
+      - Company names alone (e.g., "Unity Biotechnology", "Calico") should be biotech_query
+      - Questions about specific drugs, trials, or therapies are biotech_query
+      - Only reject if clearly unrelated AND no biotech context exists
+
+      **SPELLING CORRECTION:**
       - If the question has typos or misspellings related to biotech terms, correct them
       - Examples: "senolytics" → "cellular senescence", "mTOR" → "mTOR pathway", "hallmarks of ageing" → "hallmarks of aging"
 
@@ -36,7 +71,7 @@ export class BiotechService {
         "category": "greeting|biotech_query|general_knowledge|spam",
         "confidence": 0.0-1.0,
         "corrected_question": "spell-corrected version if needed, otherwise null",
-        "reasoning": "brief explanation"
+        "reasoning": "brief explanation including context consideration"
       }`;
 
       let result;
@@ -45,7 +80,7 @@ export class BiotechService {
       if (type === 'anthropic') {
         const response = await client.messages.create({
           model: model,
-          max_tokens: 300, // Small response needed
+          max_tokens: 400, // Slightly increased for context reasoning
           temperature: 0.2, // Low temp for consistent classification
           messages: [{ role: 'user', content: classificationPrompt }]
         });
@@ -59,7 +94,7 @@ export class BiotechService {
           ],
           response_format: { type: 'json_object' },
           temperature: 0.2,
-          max_completion_tokens: 300
+          max_completion_tokens: 400
         });
         result = JSON.parse(response.choices[0].message.content);
       } else if (type === 'groq') {
@@ -70,7 +105,7 @@ export class BiotechService {
             { role: 'user', content: classificationPrompt }
           ],
           temperature: 0.2,
-          max_tokens: 300,
+          max_completion_tokens: 400,
           response_format: { type: 'json_object' }
         });
         const content = response.choices[0].message.content;
@@ -81,14 +116,18 @@ export class BiotechService {
         question: question.substring(0, 50),
         category: result.category,
         confidence: result.confidence,
-        corrected: result.corrected_question
+        corrected: result.corrected_question,
+        had_history: history.length > 0
       });
 
       return result;
     } catch (error) {
       logger.error('Classification failed, falling back to simple check:', error);
       
-      // FALLBACK: If AI fails, use simple heuristic
+      // ───────────────────────────────────────────────────────────────────────
+      // UPDATED FALLBACK: If history exists, assume biotech follow-up
+      // WHY: Better to allow follow-ups than block legitimate questions
+      // ───────────────────────────────────────────────────────────────────────
       const lower = question.toLowerCase();
       const greetings = ['hello', 'hi', 'hey', 'thanks', 'thank you', 'bye', 'goodbye'];
       
@@ -98,6 +137,16 @@ export class BiotechService {
           confidence: 0.9,
           corrected_question: null,
           reasoning: 'Fallback greeting detection'
+        };
+      }
+      
+      // If history exists, assume follow-up question
+      if (history && history.length > 0) {
+        return {
+          category: 'biotech_query',
+          confidence: 0.7,
+          corrected_question: null,
+          reasoning: 'Fallback - assuming follow-up in biotech conversation'
         };
       }
       
@@ -142,12 +191,12 @@ export class BiotechService {
   static getRejectionResponse() {
     return {
       status: 'rejected',
-      response_text: "I specialize in **biotech and longevity data**. I can help you with:\n\n" +
-        "• **Companies**: Market cap, funding, locations, pipelines\n" +
-        "• **Clinical Trials**: Phases, FDA approvals, therapeutic areas\n" +
-        "• **Drug Development**: Pipelines, modalities, mechanisms of action\n" +
-        "• **Longevity Research**: Hallmarks of aging, senescence, healthspan\n\n" +
-        "Try asking something like: *\"Which companies are developing drugs for Alzheimer's?\"* or *\"Show me Phase 3 trials for cancer therapies.\"*",
+      response_text: "I specialize in biotech and longevity data. I can help you with:\n\n" +
+        "• Companies: Market cap, funding, locations, pipelines\n" +
+        "• Clinical Trials: Phases, FDA approvals, therapeutic areas\n" +
+        "• Drug Development: Pipelines, modalities, mechanisms of action\n" +
+        "• Longevity Research: Hallmarks of aging, senescence, healthspan\n\n" +
+        "Try asking something like: \"Which companies are developing drugs for Alzheimer's?\" or \"Show me Phase 3 trials for cancer therapies.\"",
       visualization_type: null,
       result_data: null,
       generated_sql: null,

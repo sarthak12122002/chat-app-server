@@ -1,11 +1,18 @@
+// src/services/llm.service.js
+
 import { getLLMClient } from '../config/llm.js';
 import { logger } from '../utils/logger.js';
 import { SchemaService } from './schema.service.js';
 import { encode } from "gpt-tokenizer";
+import { runAgentQuery } from './agentService.js';
 
+// ════════════════════════════════════════════════════════════════════════════
+// ENVIRONMENT VARIABLES:
+// USE_AGENT_MODE=false   ← set to 'true' to enable agent mode
+// ════════════════════════════════════════════════════════════════════════════
 
 export class LLMService {
- static buildPrompt(question, schema) {
+  static buildPrompt(question, schema) {
     // ─────────────────────────────────────────────────────────────────────
     // CHANGE: Added spelling correction instructions directly in SQL prompt
     // WHY: Double-layer correction - classification + SQL generation both fix errors
@@ -58,7 +65,7 @@ export class LLMService {
 
     const response = await client.messages.create({
       model: model,
-      max_tokens: 2000,
+      max_completion_tokens: 2000,
       messages: [{ role: 'user', content: prompt }]
     });
 
@@ -69,8 +76,8 @@ export class LLMService {
   static async generateQueryWithOpenAI(question, schema, client, model) {
     const prompt = this.buildPrompt(question, schema);
 
-     const realTokens = encode(prompt).length;
-     logger.info(`Real Token Size: ${realTokens}`);
+    const realTokens = encode(prompt).length;
+    logger.info(`Real Token Size: ${realTokens}`);
 
     const response = await client.chat.completions.create({
       model: model,
@@ -97,7 +104,7 @@ export class LLMService {
         { role: 'user', content: prompt }
       ],
       temperature: 0.3,
-      max_tokens: 2000,
+      max_completion_tokens: 2000,
       response_format: { type: 'json_object' }
     });
 
@@ -107,7 +114,37 @@ export class LLMService {
     return JSON.parse(cleanContent);
   }
 
-  static async generateQuery(question) {
+  static async generateQuery(question, history = []) {
+    // ══════════════════════════════════════════════════════════════════════
+    // ── Agent path (feature flagged) ──────────────────────────────────────
+    // ══════════════════════════════════════════════════════════════════════
+    if (process.env.USE_AGENT_MODE === 'true') {
+      logger.info('Using agent mode for query generation');
+      const agentResult = await runAgentQuery(question, history);
+      
+      // Normalize agent result to match existing llmResult shape
+      // so nothing downstream in the controller needs to change
+      return {
+        sql:                agentResult.sql,
+        visualization_type: agentResult.visualization_type,
+        explanation:        agentResult.answer,
+        chart_config:       agentResult.chart_config || { 
+                              x_key: '', 
+                              y_key: '', 
+                              title: 'Query Results' 
+                            },
+        // Pass result_data through so controller can use it directly
+        // instead of re-executing SQL (agent already ran it)
+        _agentResultData:   agentResult.result_data,
+        _agentResultColumns: agentResult.result_columns,
+        _fromAgent:         true,
+        _agentIterations:   agentResult.iterations
+      };
+    }
+    // ══════════════════════════════════════════════════════════════════════
+    // ── End agent path ────────────────────────────────────────────────────
+    // ══════════════════════════════════════════════════════════════════════
+
     try {
       const schema = await SchemaService.getSchemaForQuestion(question);
       const { client, type, model } = getLLMClient();
@@ -152,7 +189,7 @@ export class LLMService {
     
     const stream = await client.messages.create({
       model: model,
-      max_tokens: 2000,
+      max_completion_tokens: 2000,
       messages: [{ role: 'user', content: prompt }],
       stream: true
     });
@@ -205,7 +242,7 @@ export class LLMService {
         { role: 'user', content: prompt }
       ],
       temperature: 0.3,
-      max_tokens: 1500,
+      max_completion_tokens: 1500,
       response_format: { type: 'json_object' },
       stream: true
     });

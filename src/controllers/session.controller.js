@@ -71,8 +71,8 @@ export class SessionController {
           response_text: q.response_text,
           generated_sql: q.generated_sql,
           visualization_type: q.visualization_type,
-          result_data: q.result_data,
-          chart_config: q.chart_config,
+          result_data: q.result_data ? JSON.parse(q.result_data) : null, 
+          chart_config: q.chart_config ? JSON.parse(q.chart_config) : null, 
           status: q.status,
           created_at: q.created_at,
         })),
@@ -93,6 +93,8 @@ export class SessionController {
    */
   static async list(req, res, next) {
     try {
+
+      logger.info('Listing sessions', { user_id: req.user?.id || null });
       const userId = req.user?.id || null;
       const limit = parseInt(req.query.limit) || 50;
 
