@@ -16,6 +16,7 @@ export const MODEL_LIMITS = {
 let anthropicClient = null;
 let openaiClient = null;
 let groqClient = null;
+let openrouterClient = null; 
 
 export const getAnthropicClient = () => {
   if (!anthropicClient && config.llm.anthropic.apiKey) {
@@ -44,6 +45,20 @@ export const getGroqClient = () => {
   return groqClient;
 };
 
+export const getOpenRouterClient = () => {
+  if (!openrouterClient && config.llm.openrouter.apiKey) {
+    openrouterClient = new OpenAI({
+      apiKey: config.llm.openrouter.apiKey,
+      baseURL: 'https://openrouter.ai/api/v1',
+      defaultHeaders: {
+        'HTTP-Referer': config.llm.openrouter.appUrl,
+        'X-Title': config.llm.openrouter.appName
+      }
+    });
+  }
+  return openrouterClient;
+};
+
 export const getLLMClient = () => {
   const provider = config.llm.provider;
   
@@ -68,8 +83,15 @@ export const getLLMClient = () => {
       model: config.llm.groq.model,
       limits: MODEL_LIMITS[config.llm.groq.model] || { maxTokens: 32000, recommended: 20000 }
     };
+  } else if (provider === 'openrouter') {
+    return {
+      client: getOpenRouterClient(),
+      type: 'openrouter',
+      model: config.llm.openrouter.model,
+      limits: MODEL_LIMITS[config.llm.openrouter.model] || { maxTokens: 4096, recommended: 3000 }
+    };
   }
-  
+
   throw new Error(`Unsupported LLM provider: ${provider}`);
 };
 

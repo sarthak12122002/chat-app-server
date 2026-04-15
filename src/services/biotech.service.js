@@ -16,7 +16,7 @@ export class BiotechService {
    * @param {Array} history - Previous conversation messages [{role, content}]
    * @returns {Object} Classification result
    */
-  static async classifyQuestion(question, history = []) {
+  static async classifyQuestion(question, history = [], tracker = null) {
     try {
       const { client, type, model } = getLLMClient();
 
@@ -85,7 +85,7 @@ export class BiotechService {
           messages: [{ role: 'user', content: classificationPrompt }]
         });
         result = JSON.parse(response.content[0].text);
-      } else if (type === 'openai') {
+      } else if (type === 'openai' || type === 'openrouter') {
         const response = await client.chat.completions.create({
           model: model,
           messages: [

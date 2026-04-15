@@ -114,13 +114,13 @@ export class LLMService {
     return JSON.parse(cleanContent);
   }
 
-  static async generateQuery(question, history = []) {
+  static async generateQuery(question, history = [], tracker = null) {
     // ══════════════════════════════════════════════════════════════════════
     // ── Agent path (feature flagged) ──────────────────────────────────────
     // ══════════════════════════════════════════════════════════════════════
     if (process.env.USE_AGENT_MODE === 'true') {
       logger.info('Using agent mode for query generation');
-      const agentResult = await runAgentQuery(question, history);
+      const agentResult = await runAgentQuery(question, history, tracker);
       
       // Normalize agent result to match existing llmResult shape
       // so nothing downstream in the controller needs to change

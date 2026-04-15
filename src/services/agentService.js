@@ -385,7 +385,7 @@ function normalizeResponse(rawResponse, providerType) {
 // HELPER: Call LLM with provider abstraction
 // ════════════════════════════════════════════════════════════════════════════
 
-async function callLLM(messages) {
+async function callLLM(messages, tracker = null) {
   const { client, type, model } = getLLMClient();
   
   logger.debug(`Calling LLM: ${type}/${model}`, { 
@@ -406,7 +406,7 @@ async function callLLM(messages) {
       messages: messages
     });
     
-  } else if (type === 'openai' || type === 'groq') {
+  } else if (type === 'openai' || type === 'groq' || type === 'openrouter') {
     // ──────────────────────────────────────────────────────────────────────
     // OpenAI / Groq format
     // ──────────────────────────────────────────────────────────────────────
@@ -438,6 +438,34 @@ async function callLLM(messages) {
   } else {
     throw new Error(`Unsupported LLM provider: ${type}`);
   }
+
+  if (tracker && rawResponse) {
+    let inputTokens = 0;
+    let outputTokens = 0;
+
+    if (type === 'anthropic') {
+      inputTokens  = rawResponse.usage?.input_tokens  || 0;
+      outputTokens = rawResponse.usage?.output_tokens || 0;
+    } else if (type === 'openai' || type === 'groq' || type === 'gemini' || type === 'openrouter') {
+      // OpenAI, Groq, Gemini, and OpenRouter all use the same usage format
+      inputTokens  = rawResponse.usage?.prompt_tokens     || 0;
+      outputTokens = rawResponse.usage?.completion_tokens || 0;
+    }
+
+    tracker.record({
+      callName:     'agent_iteration',
+      inputTokens,
+      outputTokens,
+      model,
+      provider: type,
+    });
+    
+    logger.debug('Token usage tracked', { 
+      provider: type, 
+      input: inputTokens, 
+      output: outputTokens 
+    });
+  }
   
   // Normalize response format
   const normalized = normalizeResponse(rawResponse, type);
@@ -455,10 +483,8 @@ async function callLLM(messages) {
 // MAIN AGENT QUERY FUNCTION
 // ════════════════════════════════════════════════════════════════════════════
 
-export async function runAgentQuery(question, history = []) {
+export async function runAgentQuery(question, history = [], tracker = null) {
   logger.info('Starting agent query', { question: question.substring(0, 100) });
-
-  logger.debug('Initial conversation history', history);
 
   // ──────────────────────────────────────────────────────────────────────────
   // 1. Build initial messages array
@@ -503,7 +529,7 @@ export async function runAgentQuery(question, history = []) {
     
     let response;
     try {
-      response = await callLLM(messages);
+      response = await callLLM(messages, tracker);
     } catch (error) {
       logger.error('LLM call failed:', error);
       return {

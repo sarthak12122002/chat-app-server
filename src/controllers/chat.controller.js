@@ -5,6 +5,7 @@ import { QueryService } from '../services/query.service.js';
 import { QUERY_STATUS } from '../utils/constants.js';
 import { logger } from '../utils/logger.js';
 import { ChatSession } from '../models/chatSession.model.js';
+import { TokenTracker } from '../utils/tokenTracker.js';
 
 export class ChatController {
   static async processQuery(req, res, next) {
@@ -13,11 +14,14 @@ export class ChatController {
       // CHANGE: Now accepts session_id and history from frontend
       // WHY: Enable conversation threading and context-aware responses
       // ─────────────────────────────────────────────────────────────────────
+
+      const tracker = new TokenTracker();
+
       const { question, history = [], session_id } = req.validatedData;
       const userId = req.user?.id || null;
 
       // Step 1: AI-powered domain validation
-      const classification = await BiotechService.classifyQuestion(question, history);
+      const classification = await BiotechService.classifyQuestion(question, history, tracker);
 
       // Handle greetings
       if (classification.category === 'greeting') {
@@ -77,7 +81,15 @@ export class ChatController {
         // CHANGE: Pass conversation history to LLM for context
         // WHY: Enables "show me more", "compare to X" type follow-ups
         // ───────────────────────────────────────────────────────────────────
-        llmResult = await LLMService.generateQuery(processedQuestion, history);
+        llmResult = await LLMService.generateQuery(processedQuestion, history, tracker);
+
+        const tokenUsage = tracker.summary();
+        logger.info('Request token usage', {
+          total_tokens:    tokenUsage.total_tokens,
+          total_llm_calls: tokenUsage.total_llm_calls,
+          cost_usd:        tokenUsage.estimated_cost_usd,
+          duration_ms:     tokenUsage.duration_ms,
+        });
       } catch (error) {
         logger.error('LLM generation failed:', error);
         
